@@ -1,4 +1,5 @@
 import logging
+import os.path
 import socket
 import sys
 import datetime
@@ -11,14 +12,12 @@ import const
 class Resources:
 
     def __init__(self, path):
-        self.type = None
         self.path = path
         self.text = None
         self.is_found = None
         try:
             f = open(self.path, mode='r', encoding='utf-8')
             self.text = f.read()
-            self.type = filetype.guess(self.path)
             self.is_found = True
             logging.debug(f'Resources {self.path} loaded successfully')
             f.close()
@@ -43,7 +42,7 @@ class Request:
         self.protocol = self.received.split()[2]
         self.header = None
         self.body = None
-        # print(f'{self.method} {self.path} {self.protocol}')
+        print(f'{self.method} {self.path} {self.protocol}')
         pass
 
 
@@ -93,14 +92,12 @@ class Response:
 
 class HTTPServer:
 
-    def __init__(self, host='localhost', port=80, max_link=5, res_dir='resources', config=None):
+    def __init__(self, config=None):
+        self.res = None
         logging.info('Server init...')
         if config is None:
             # one way to config
-            self.host = host
-            self.port = port
-            self.max_link = max_link
-            self.res_dir = res_dir
+            return
         else:
             # the other way
             serv_conf = config['server']
@@ -112,7 +109,7 @@ class HTTPServer:
             self.index = res_conf['index']
             self.not_found = res_conf['not-found']
         self.runnable = None
-        self.server_socket = ServerSocket(host, port, max_link)
+        self.server_socket = ServerSocket(self.host, self.port, self.max_link)
 
     def run(self):
         self.runnable = True
@@ -124,21 +121,22 @@ class HTTPServer:
             # get request and process
             req = Request(self.server_socket.receive())
             # dir / usually meaning index
-            if req.path == r'/':
-                res = Resources(f'{self.res_dir}/{self.index}')
-                status_code = status['ok']
-                if not res.is_found:
-                    res = Resources(f'{self.res_dir}/{self.not_found}')
-                    status_code = status['ok']
-            else:
-                res = Resources(req.path)
+            res = Resources(f'{self.res_dir}{req.path}')  # root / will with request
+            if not res.is_found:  # TODO and res.type == 'text/html'
+                res = Resources(f'{self.res_dir}/{self.not_found}')
                 status_code = status['not-found']
-            self.server_socket.send(Response(content=res.text,
-                                             content_type='text/html',
-                                             protocol=req.protocol,
-                                             status=str(status_code),
-                                             reason=None
-                                             ).data())
+                response = Response(content=res.text, content_type='text/html',
+                                    protocol=req.protocol, status=str(status_code), reason=None).data()
+            else:
+                status_code = status['ok']
+                response = Response(content=res.text, content_type='text/html',
+                                    protocol=req.protocol, status=str(status_code), reason=None).data()
+            if req.path == r'/':
+                self.res = Resources(f'{self.res_dir}/{self.index}')
+                status_code = status['ok']
+                response = Response(content=res.text, content_type='text/html',
+                                    protocol=req.protocol, status=str(status_code), reason=None).data()
+            self.server_socket.send(response)
 
     def stop(self):
         logging.info('Stopping server...')
