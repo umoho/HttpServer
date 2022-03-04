@@ -1,9 +1,10 @@
 server:
   host: 'localhost'
   port: 8080
-  resources:
-    directory: 'resources/'
-    index: 'index.html'
-    not-found: 'not_found.html'
   link:
     max: 5  # max links in the same time
+
+resources:
+  directory: 'resources'
+  index: 'index.html'
+  not-found: '404.html'
