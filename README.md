@@ -1,7 +1,6 @@
-# HttpServer
+# Pico Pages
 A Simple HTTP Server
 
-At present, it can only respond to fixed pages (index.html)
+Only the most basic functions
 
-Author: umoho
 The project start at 2022/3/3
