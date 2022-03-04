@@ -1,50 +1,73 @@
 import logging
-import os
 import socket
 import sys
 import datetime
+import filetype
+import gzip
 
 import const
 
 
-def check_resources(path):
-    path_dir = os.listdir(path)
-    for all_dir in path_dir:
-        child = os.path.join('%s%s' % (path, all_dir))
-        print(child.encode('gbk'))
+class Resources:
+
+    def __init__(self, path):
+        self.type = None
+        self.path = path
+        self.text = None
+        try:
+            f = open(self.path, mode='r', encoding='utf-8')
+            self.text = f.read()
+            self.type = filetype.guess(self.path)
+            logging.debug(f'Resources {self.path} loaded successfully')
+            f.close()
+        except FileNotFoundError as e:
+            logging.error(f'Resource file {self.path} is not found')
+            logging.exception(e)
+        except PermissionError as e:
+            logging.error(f'Cannot read resource file {self.path} because file permission error')
+            logging.exception(e)
+        except IOError as e:
+            logging.error(f'Cannot read resource file {self.path} because IO error')
+            logging.exception(e)
 
 
-def read_resources(path):
-    # check_resources(path)
-    text = ''
-    try:
-        f = file = open(path, mode='r', encoding='utf-8')
-        text = f.read()
-        logging.info('Resources loaded')
-        f.close()
-    except FileNotFoundError:
-        logging.error('Resource files is not found')
-    except PermissionError:
-        logging.error('Cannot read resources because file permission error')
-    except IOError:
-        logging.error('Cannot read resources because IO error')
-    return text
+class Response:
 
+    def __init__(self, content, content_type, content_encoding=None,
+                 protocol='HTTP/2', status='200', reason='OK',
+                 server_name=f'{const.NAME}'):
+        self.content = content
+        self.content_type = content_type
+        self.content_encoding = content_encoding
+        self.content_length = sys.getsizeof(content)
+        date_time = datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+        self.objs = {
+            'Content-Type': content_type,
+            'Content-Length': self.content_length,
+            'Content-Encoding': self.content_encoding,
+            'Date': date_time,
+            'Server': server_name
+        }
+        self.response_head = ''
+        self.objects_head = ''
+        if reason is None:
+            self.response_head = f'{protocol} {status}'
+        else:
+            self.response_head = f'{protocol} {status} {reason}'
+        for key in self.objs.keys():
+            if self.objs[key] is None:
+                continue
+            self.objects_head += f'{key}: {self.objs[key]}\r\n'
+        self.response = f'{self.response_head}\r\n{self.objects_head}\r\n{self.content}'
 
-def response(data,
-             server_name=f'{const.NAME} (version {const.VERSION})',
-             content_type='text/html',
-             protocol='HTTP/1.x',
-             state_code='200 OK'):
-    date_time = datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-    content_length = sys.getsizeof(data)
-    line = f'{protocol} {state_code}\r\n'
-    head = f'Server: {server_name}\r\n' \
-           f'Date: {date_time}\r\n' \
-           f'Content-Length: {content_length}\r\n' \
-           f'Content-Type: {content_type}\r\n'
-    resp = f'{line}{head}\r\n{data}'
-    return resp
+    def raw(self):
+        return self.response.encode('utf-8')
+
+    def encoded(self, encode_method):
+        encoded_content = None
+        if encode_method == 'gzip':
+            encoded_content = gzip.compress(self.content.encode('utf-8'))
+        return encoded_content
 
 
 class HTTPServer:
@@ -57,8 +80,9 @@ class HTTPServer:
 
     def run(self):
         self.runnable = True
+        res = Resources(r'resources/index.html')
         while self.runnable:
-            self.server_socket.link(response(data=read_resources(self.dir)))
+            self.server_socket.link(Response(content=res.text, content_type='text/html').raw())
 
     def stop(self):
         logging.info('Stopping server...')
@@ -79,35 +103,17 @@ class ServerSocket:
             logging.debug('Socket created')
             self.server_socket.bind((host, port))
             logging.debug(f'Socket bind {host}:{port}')
-        except socket.error:
+        except socket.error as e:
             logging.error(f'Cannot bind host {host} with port {port} because socket error')
+            logging.exception(e)
         self.server_socket.listen(max_link)
         logging.info(f'Listening at http://{host}:{port}/')
 
-    def link(self, message=''):
+    def link(self, data=None):
         client_socket, address = self.server_socket.accept()
         client_socket.recv(1024)
         logging.info(f'Linked from {address[0]}:{address[1]}')
-        client_socket.send(message.encode('utf-8'))
+        client_socket.send(data)
         logging.debug('Message sent')
         client_socket.close()
         logging.debug('Link closed')
-
-
-class RequestParse:
-
-    def __init__(self, request):
-        self.content = request
-        self.method = request.split()[0]
-        self.path = request.split()[1]
-        self.body = request.split('\r\n\r\n', 1)[1]
-
-    def body(self):
-        return self.body
-
-    def path(self):
-        index = self.path.find('?')
-        if index == -1:
-            return self.path, {}
-        else:
-            path, query_string = self.path.split('?', 1)

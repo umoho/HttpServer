@@ -23,4 +23,4 @@ http_server = server.HTTPServer(host=serv_conf['host'],
 
 http_server.run()
 
-http_server.stop()
+# TODO http_server.stop()
