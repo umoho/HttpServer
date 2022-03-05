@@ -1,105 +1,32 @@
 import logging
-import os.path
 import socket
-import sys
-import datetime
+from enum import Enum, unique
+
 import filetype
-import gzip
 
-import const
-
-
-class Resources:
-
-    def __init__(self, path):
-        self.path = path
-        self.text = None
-        self.is_found = None
-        try:
-            f = open(self.path, mode='r', encoding='utf-8')
-            self.text = f.read()
-            self.is_found = True
-            logging.debug(f'Resources {self.path} loaded successfully')
-            f.close()
-        except FileNotFoundError as e:
-            self.is_found = False
-            logging.error(f'Resource file {self.path} is not found')
-            logging.exception(e)
-        except PermissionError as e:
-            logging.error(f'Cannot read resource file {self.path} because file permission error')
-            logging.exception(e)
-        except IOError as e:
-            logging.error(f'Cannot read resource file {self.path} because IO error')
-            logging.exception(e)
+import resources
+from http import Request
+from http import Response
 
 
-class Request:
+@unique
+class HTTPStatusCode(Enum):
 
-    def __init__(self, recv):
-        self.received = recv.decode()
-        self.method = self.received.split()[0]
-        self.path = self.received.split()[1]
-        self.protocol = self.received.split()[2]
-        self.header = None
-        self.body = None
-        print(f'{self.method} {self.path} {self.protocol}')
-        pass
-
-
-class Response:
-
-    def __init__(self, content, content_type, content_encoding=None,
-                 protocol='HTTP/2', status='200', reason=None,
-                 server_name=f'{const.NAME} ({const.VERSION})'):
-        self.content = content
-        self.content_type = content_type
-        self.content_encoding = content_encoding
-        if self.content_encoding is None:
-            # send data without encoding
-            self.content_length = sys.getsizeof(self.content)
-        elif content_encoding == 'gzip':  # TODO something wrong
-            self.encoded_content = gzip.compress(self.content.encode())
-            self.content_length = sys.getsizeof(self.encoded_content)
-            self.content = str(self.encoded_content)
-        date_time = datetime.datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-        self.objs = {
-            'Content-Type': content_type,
-            'Content-Length': self.content_length,
-            'Content-Encoding': self.content_encoding,
-            'Date': date_time,
-            'Server': server_name
-        }
-        self.response_head = ''
-        self.objects_head = ''
-        if reason is None:
-            self.response_head = f'{protocol} {status}'
-        else:
-            # no reason
-            self.response_head = f'{protocol} {status} {reason}'
-        for key in self.objs.keys():
-            if self.objs[key] is None:
-                # if no value, ignore it
-                continue
-            # build object info
-            self.objects_head += f'{key}: {self.objs[key]}\r\n'
-        # finally answer
-        self.response = f'{self.response_head}\r\n{self.objects_head}\r\n{self.content}'
-
-    def data(self, encode_method='utf-8'):
-        # encode raw data
-        return self.response.encode(encode_method)
+    OK = 200
+    NOT_FOUND = 404
 
 
 class HTTPServer:
 
-    def __init__(self, config=None):
+    def __init__(self, config):
         self.res = None
         logging.info('Server init...')
         if config is None:
-            # one way to config
+            # server cannot start without config
+            logging.error('Server cannot start without config')
             return
         else:
-            # the other way
+            # config the server
             serv_conf = config['server']
             res_conf = config['resources']
             self.host = serv_conf['host']
@@ -113,30 +40,38 @@ class HTTPServer:
 
     def run(self):
         self.runnable = True
-        status = {
-            'ok': 200,
-            'not-found': 404
-        }
         while self.runnable:
             # get request and process
             req = Request(self.server_socket.receive())
-            # dir / usually meaning index
-            res = Resources(f'{self.res_dir}{req.path}')  # root / will with request
-            if not res.is_found:  # TODO and res.type == 'text/html'
-                res = Resources(f'{self.res_dir}/{self.not_found}')
-                status_code = status['not-found']
-                response = Response(content=res.text, content_type='text/html',
-                                    protocol=req.protocol, status=str(status_code), reason=None).data()
-            else:
-                status_code = status['ok']
-                response = Response(content=res.text, content_type='text/html',
-                                    protocol=req.protocol, status=str(status_code), reason=None).data()
-            if req.path == r'/':
-                self.res = Resources(f'{self.res_dir}/{self.index}')
-                status_code = status['ok']
-                response = Response(content=res.text, content_type='text/html',
-                                    protocol=req.protocol, status=str(status_code), reason=None).data()
-            self.server_socket.send(response)
+            # root / will with request
+            res_path = f'{self.res_dir}{req.path}'
+            not_found_page_path = f'{self.res_dir}/{self.not_found}'
+            try:
+                resource = resources.GeneralResource(res_path)
+                if filetype.guess(res_path) is not None:
+                    mime = filetype.guess(res_path).mime
+                    res = resources.GeneralResource(res_path, mime)
+                    print(mime)
+                else:
+                    # print(resource.filetype())
+                    # TODO more file type support
+                    if resource.filetype().lower() == 'js':
+                        res = resources.JavaScriptResource(res_path)
+                    elif resource.filetype().lower() == 'css':
+                        res = resources.CSSResource(res_path)
+                    elif resource.filetype().lower() == 'html':
+                        try:
+                            res = resources.HTMLResource(res_path)
+                        except resources.ResourceNotFoundError:
+                            res = resources.HTMLResource(not_found_page_path)
+                            # TODO no good
+                    else:
+                        res = resources.HTMLResource(not_found_page_path)
+                response = Response(res, status=HTTPStatusCode.OK)
+            except resources.ResourceNotFoundError:
+                response = Response(resources.EmptyResource(), status=HTTPStatusCode.NOT_FOUND)
+                logging.warning(f'Resource at {res_path} is not found')
+            self.server_socket.send(response.data())
 
     def stop(self):
         logging.info('Stopping server...')
